@@ -33,8 +33,11 @@ jobs:
       # 4️⃣ Configure DVC remote
       - name: Configure DVC remote
         run: |
-          dvc remote add -d gcsremote gs://mlops_b
+          if ! dvc remote list | grep -q gcsremote; then
+            dvc remote add -d gcsremote gs://mlops_b
+          fi
           dvc remote list
+
 
       # 5️⃣ Pull DVC artifacts
       - name: Pull data and model from DVC
