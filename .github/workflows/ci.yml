@@ -3,10 +3,10 @@ name: CI - Pytest with DVC + CML
 on:
   push:
     branches:
-      - dev       # run on any commit to dev
+      - dev
   pull_request:
     branches:
-      - main      # run on PR to main from dev
+      - main
 
 jobs:
   test:
@@ -28,30 +28,36 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install dvc[gcs] pytest dvc-gs
+          pip install dvc[gcs] dvc-gs pytest
 
-      # 4️⃣ Configure DVC remote
+      # 4️⃣ Configure DVC remote (force in case it already exists)
       - name: Configure DVC remote
         run: |
-          if ! dvc remote list | grep -q gcsremote; then
-            dvc remote add -d gcsremote gs://mlops_b
-          fi
+          dvc remote add -d -f gcsremote gs://mlops_b
           dvc remote list
 
+      # 5️⃣ Authenticate to GCP using secret
+      - name: Authenticate to GCP
+        run: |
+          echo "${{ secrets.GCP_SA_KEY }}" > gcp-key.json
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: gcp-key.json
 
-      # 5️⃣ Pull DVC artifacts
+      # 6️⃣ Pull DVC artifacts
       - name: Pull data and model from DVC
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: gcp-key.json
         run: |
           dvc pull data/raw/iris.csv.dvc
           dvc pull tmp/model.joblib.dvc
           ls -R
 
-      # 6️⃣ Run pytest
+      # 7️⃣ Run pytest
       - name: Run pytest and save results
         run: |
           pytest -v tests/test_evaluate.py --maxfail=1 --disable-warnings | tee result.log
 
-      # 7️⃣ Post results to PR using CML
+      # 8️⃣ Post results to PR using CML
       - name: Post pytest results as PR comment
         uses: iterative/setup-cml@v2
         with:
