@@ -50,7 +50,7 @@ jobs:
 
       # 7️⃣ Post results to PR using CML
       - name: Post pytest results as PR comment
-        uses: iterative/cml@v0.14
+        uses: iterative/cml@v2
         with:
           args: result.log
         env:
