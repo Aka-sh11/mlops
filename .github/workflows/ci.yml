@@ -51,8 +51,7 @@ jobs:
       # 7️⃣ Post results to PR using CML
       - name: Post pytest results as PR comment
         uses: iterative/cml@v0.14
+        with:
+          args: result.log
         env:
-          CML_GITHUB_TOKEN: ${{ secrets.CML_GITHUB_TOKEN }}
-        run: |
-          cml-send-comment result.log
-
+          CML_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
