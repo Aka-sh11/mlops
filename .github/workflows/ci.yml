@@ -38,7 +38,7 @@ jobs:
       # 5️⃣ Configure DVC remote
       - name: Configure DVC remote
         run: |
-          dvc remote add -d -f gcsremote gs://mlops_b
+          dvc remote add -d -f gcsremote gs://mlops_b/week_2
           dvc remote list
       
       # 6️⃣ Authenticate to Google Cloud & Pull DVC data
