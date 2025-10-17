@@ -1,5 +1,4 @@
 name: CI - Pytest with DVC + CML
-
 on:
   push:
     branches:
@@ -8,59 +7,65 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
-
     steps:
       # 1️⃣ Checkout repo
       - name: Checkout repository
-        uses: actions/checkout@v3
-
+        uses: actions/checkout@v4
+      
       # 2️⃣ Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
-
+      
       # 3️⃣ Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install dvc[gcs] dvc-gs pytest
-
-      # 4️⃣ Configure DVC remote (force-add if exists)
+      
+      # 4️⃣ Setup CML
+      - uses: iterative/setup-cml@v2
+      
+      # 5️⃣ Configure DVC remote
       - name: Configure DVC remote
         run: |
           dvc remote add -d -f gcsremote gs://mlops_b
           dvc remote list
-
-      # 5️⃣ Pull DVC artifacts with authentication
-      - name: Authenticate and pull DVC artifacts
+      
+      # 6️⃣ Authenticate to Google Cloud & Pull DVC data
+      - name: Authenticate to Google Cloud & Pull DVC data
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
-          # Write the service account key to a file
-          echo "${{ secrets.GCP_SA_KEY }}" > gcp-key.json
-          
-          # Export the environment variable so DVC can use it
-          export GOOGLE_APPLICATION_CREDENTIALS=gcp-key.json
-          
-          # Pull data and model from DVC
+          echo "$GCP_SA_KEY" > key.json
+          export GOOGLE_APPLICATION_CREDENTIALS=$PWD/key.json
+          gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
+          gcloud auth list
           dvc pull data/raw/iris.csv.dvc
           dvc pull tmp/model.joblib.dvc
-          
-          # List files to verify
           ls -R
-
-      # 6️⃣ Run pytest
+      
+      # 7️⃣ Run pytest
       - name: Run pytest and save results
         run: |
-          pytest -v tests/test_evaluate.py --maxfail=1 --disable-warnings | tee result.log
-
-      # 7️⃣ Post results to PR using CML
-      - name: Post pytest results as PR comment
-        uses: iterative/setup-cml@v2
-        with:
-          args: result.log
+          pytest -v tests/test_evaluate.py --maxfail=1 --disable-warnings 2>&1 | tee result.log
+      
+      # 8️⃣ Post results to PR using CML
+      - name: Create CML report
         env:
-          CML_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "### Pytest Results" > report.md
+          echo "\`\`\`" >> report.md
+          cat result.log >> report.md
+          echo "\`\`\`" >> report.md
+          cml comment create --publish report.md
