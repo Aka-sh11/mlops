@@ -1,4 +1,6 @@
+numpy>=1.23
 pandas
 scikit-learn
 joblib
 google-cloud-storage
+pytest
