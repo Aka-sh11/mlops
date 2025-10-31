@@ -1,21 +1,31 @@
-# tests/test_evaluate.py
+# tests/test_evaluate.py (MLflow-enabled, version-only)
 import os
-import joblib
 import pandas as pd
 import pytest
 from sklearn.metrics import accuracy_score
+import mlflow
+import mlflow.pyfunc
 
-# Paths to DVC-tracked files
+# Data path (DVC tracks the dataset as before)
 DATA_PATH = "data/raw/iris.csv"
-MODEL_PATH = "tmp/model.joblib"
 
-# Fixture to load model once per module
 @pytest.fixture(scope="module")
 def model():
-    assert os.path.exists(MODEL_PATH), f"{MODEL_PATH} does not exist"
-    m = joblib.load(MODEL_PATH)
-    assert hasattr(m, "predict")
-    return m
+    # MLflow tracking URI
+    mlflow_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if not mlflow_uri:
+        raise RuntimeError("MLFLOW_TRACKING_URI must be set to run tests that pull model from MLflow registry.")
+    mlflow.set_tracking_uri(mlflow_uri)
+
+    # Model name and version
+    model_name = os.environ.get("TEST_MODEL_NAME", "iris-classifier")
+    model_version = os.environ.get("TEST_MODEL_VERSION", "latest")  # only version, no stage
+    model_uri = f"models:/{model_name}/{model_version}"
+
+    print(f"Loading model from: {model_uri}")
+    model = mlflow.pyfunc.load_model(model_uri)
+    assert hasattr(model, "predict")
+    return model
 
 def test_data_exists():
     """Check that dataset exists and has expected structure."""
@@ -24,10 +34,6 @@ def test_data_exists():
     assert not df.empty, "Dataset is empty"
     assert "species" in df.columns, "Target column 'species' missing"
 
-def test_model_exists_and_loads(model):
-    """Check that model file exists and can be loaded (handled by fixture)."""
-    pass  # model fixture already asserts existence and predict method
-
 def test_model_predicts_correctly(model):
     """Check model predictions on the dataset and basic accuracy."""
     df = pd.read_csv(DATA_PATH)
@@ -35,9 +41,10 @@ def test_model_predicts_correctly(model):
     y = df["species"]
 
     preds = model.predict(X)
+    # Normalize to numpy array length if necessary
     assert len(preds) == len(y), "Prediction length mismatch"
     acc = accuracy_score(y, preds)
-    assert acc > 0.7, f"Sanity check failed: accuracy too low ({acc:.2f})"
+    assert acc > 0.8, f"Sanity check failed: accuracy too low ({acc:.2f})"
 
     # Save accuracy to a file for CML
     with open("result.log", "w") as f:
