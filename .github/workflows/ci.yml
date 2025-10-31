@@ -1,58 +1,71 @@
 name: CI - Pytest with DVC + CML
-
 on:
   push:
     branches:
-      - dev       # run on any commit to dev
+      - dev
   pull_request:
     branches:
-      - main      # run on PR to main from dev
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
     steps:
       # 1️⃣ Checkout repo
       - name: Checkout repository
-        uses: actions/checkout@v3
-
+        uses: actions/checkout@v4
+      
       # 2️⃣ Set up Python
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.11"
-
+          python-version: "3.10"
+      
       # 3️⃣ Install dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install dvc[gcs] pytest cml
-
-      # 4️⃣ Configure DVC remote
+          pip install dvc[gcs] dvc-gs pytest
+      
+      # 4️⃣ Setup CML
+      - uses: iterative/setup-cml@v2
+      
+      # 5️⃣ Configure DVC remote
       - name: Configure DVC remote
         run: |
-          dvc remote add -d gcsremote gs://mlops_b
+          dvc remote add -d -f gcsremote gs://mlops_b/week_2
           dvc remote list
-
-      # 5️⃣ Pull DVC artifacts
-      - name: Pull data and model from DVC
+      
+      # 6️⃣ Authenticate to Google Cloud & Pull DVC data
+      - name: Authenticate to Google Cloud & Pull DVC data
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
+          echo "$GCP_SA_KEY" > key.json
+          export GOOGLE_APPLICATION_CREDENTIALS=$PWD/key.json
+          gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
+          gcloud auth list
           dvc pull data/raw/iris.csv.dvc
           dvc pull tmp/model.joblib.dvc
           ls -R
-
-      # 6️⃣ Run pytest
+      
+      # 7️⃣ Run pytest
       - name: Run pytest and save results
         run: |
-          pytest -v tests/test_evaluate.py --maxfail=1 --disable-warnings | tee result.log
-
-      # 7️⃣ Post results to PR using CML
-      - name: Post pytest results as PR comment
-        uses: iterative/cml@v0.14
+          pytest -v tests/test_evaluate.py --maxfail=1 --disable-warnings 2>&1 | tee result.log
+      
+      # 8️⃣ Post results to PR using CML
+      - name: Create CML report
         env:
-          CML_GITHUB_TOKEN: ${{ secrets.CML_GITHUB_TOKEN }}
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cml-send-comment result.log
-
+          echo "### Pytest Results" > report.md
+          echo "\`\`\`" >> report.md
+          cat result.log >> report.md
+          echo "\`\`\`" >> report.md
+          cml comment create --publish report.md
