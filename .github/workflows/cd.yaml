@@ -3,7 +3,7 @@ name: CD - Deploy to GKE
 on:
   push:
     branches:
-      - main
+      - w6
   workflow_dispatch:  # Allow manual triggering
 
 env:
