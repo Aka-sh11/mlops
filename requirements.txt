@@ -2,5 +2,9 @@ pandas
 scikit-learn
 joblib
 google-cloud-storage
-cml
 pytest
+mlflow
+pydantic
+fastapi
+uvicorn
+
