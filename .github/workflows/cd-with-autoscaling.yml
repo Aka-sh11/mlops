@@ -3,7 +3,7 @@ name: CD - Deploy with Auto-scaling
 on:
   push:
     branches:
-      - main
+      - w6
   workflow_dispatch:
 
 env:
