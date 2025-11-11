@@ -1,0 +1,238 @@
+name: CD - Deploy with Auto-scaling
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GKE_CLUSTER: ${{ secrets.GKE_CLUSTER_NAME }}
+  GKE_ZONE: ${{ secrets.GKE_ZONE }}
+  GAR_LOCATION: ${{ secrets.GAR_LOCATION }}
+  GAR_REPOSITORY: ${{ secrets.GAR_REPOSITORY }}
+  IMAGE_NAME: iris-api
+
+jobs:
+  deploy-and-test-autoscaling:
+    name: Deploy and Test with Auto-scaling
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install DVC
+      run: |
+        pip install dvc dvc-gdrive
+
+    - name: Pull model from DVC
+      env:
+        GDRIVE_CREDENTIALS_DATA: ${{ secrets.GDRIVE_CREDENTIALS_DATA }}
+      run: |
+        dvc remote modify myremote --local gdrive_use_service_account true
+        dvc remote modify myremote --local gdrive_service_account_json_file_path /tmp/gdrive_creds.json
+        echo "$GDRIVE_CREDENTIALS_DATA" > /tmp/gdrive_creds.json
+        dvc pull model/model.pkl.dvc
+        ls -la model/
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Configure Docker for Artifact Registry
+      run: |
+        gcloud auth configure-docker ${{ env.GAR_LOCATION }}-docker.pkg.dev
+
+    - name: Build Docker image
+      run: |
+        docker build \
+          --tag "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" \
+          --tag "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest" \
+          .
+
+    - name: Push Docker image to Artifact Registry
+      run: |
+        docker push "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        docker push "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:latest"
+
+    - name: Get GKE Credentials
+      uses: google-github-actions/get-gke-credentials@v2
+      with:
+        cluster_name: ${{ env.GKE_CLUSTER }}
+        location: ${{ env.GKE_ZONE }}
+
+    - name: Deploy to GKE with Auto-scaling
+      run: |
+        # Update image in deployment
+        sed -i "s|IMAGE_URL|${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|g" k8s/deployment.yaml
+        
+        # Apply manifests
+        kubectl apply -f k8s/deployment.yaml
+        kubectl apply -f k8s/service.yaml
+        kubectl apply -f k8s/hpa.yaml
+        
+        # Wait for deployment
+        kubectl rollout status deployment/iris-api --timeout=5m
+        
+        echo "Waiting for service to get external IP..."
+        sleep 30
+
+    - name: Get External IP
+      id: get-ip
+      run: |
+        EXTERNAL_IP=""
+        for i in {1..30}; do
+          EXTERNAL_IP=$(kubectl get service iris-api-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          if [ -n "$EXTERNAL_IP" ]; then
+            echo "External IP: $EXTERNAL_IP"
+            echo "EXTERNAL_IP=$EXTERNAL_IP" >> $GITHUB_OUTPUT
+            break
+          fi
+          echo "Waiting for external IP... ($i/30)"
+          sleep 10
+        done
+        
+        if [ -z "$EXTERNAL_IP" ]; then
+          echo "Failed to get external IP"
+          exit 1
+        fi
+
+    - name: Wait for API to be ready
+      run: |
+        EXTERNAL_IP=${{ steps.get-ip.outputs.EXTERNAL_IP }}
+        echo "Waiting for API to be ready at http://$EXTERNAL_IP"
+        
+        for i in {1..30}; do
+          if curl -f -s http://$EXTERNAL_IP/health > /dev/null; then
+            echo "API is ready!"
+            break
+          fi
+          echo "Waiting for API... ($i/30)"
+          sleep 10
+        done
+
+    - name: Install wrk
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libssl-dev git
+        git clone https://github.com/wg/wrk.git /tmp/wrk
+        cd /tmp/wrk
+        make
+        sudo cp wrk /usr/local/bin/
+
+    - name: Initial State - Check Pods
+      run: |
+        echo "=== Initial Pod Count ==="
+        kubectl get pods -l app=iris-api
+        kubectl get hpa iris-api-hpa
+
+    - name: Stress Test - 1000 Requests (with auto-scaling)
+      run: |
+        EXTERNAL_IP=${{ steps.get-ip.outputs.EXTERNAL_IP }}
+        
+        echo "=========================================="
+        echo "TEST 1: 1000 concurrent connections with HPA"
+        echo "=========================================="
+        
+        # Create POST request script
+        cat > post.lua << 'EOF'
+        wrk.method = "POST"
+        wrk.body   = '{"sepal_length": 5.1, "sepal_width": 3.5, "petal_length": 1.4, "petal_width": 0.2}'
+        wrk.headers["Content-Type"] = "application/json"
+EOF
+        
+        # Run stress test
+        wrk -t10 -c1000 -d60s -s post.lua http://$EXTERNAL_IP/predict
+        
+        echo ""
+        echo "Checking pod scaling status..."
+        kubectl get pods -l app=iris-api
+        kubectl get hpa iris-api-hpa
+
+    - name: Wait for scaling
+      run: |
+        echo "Waiting for pods to scale..."
+        sleep 60
+        echo "=== Pod Status After Test 1 ==="
+        kubectl get pods -l app=iris-api -o wide
+        kubectl get hpa iris-api-hpa
+        kubectl top pods -l app=iris-api
+
+    - name: Stress Test - 2000 Requests (with auto-scaling)
+      run: |
+        EXTERNAL_IP=${{ steps.get-ip.outputs.EXTERNAL_IP }}
+        
+        echo "=========================================="
+        echo "TEST 2: 2000 concurrent connections with HPA"
+        echo "=========================================="
+        
+        cat > post.lua << 'EOF'
+        wrk.method = "POST"
+        wrk.body   = '{"sepal_length": 5.1, "sepal_width": 3.5, "petal_length": 1.4, "petal_width": 0.2}'
+        wrk.headers["Content-Type"] = "application/json"
+EOF
+        
+        wrk -t10 -c2000 -d60s -s post.lua http://$EXTERNAL_IP/predict
+        
+        echo ""
+        echo "=== Final Pod Status ==="
+        kubectl get pods -l app=iris-api -o wide
+        kubectl get hpa iris-api-hpa
+        kubectl top pods -l app=iris-api
+
+    - name: Generate Performance Report
+      if: always()
+      run: |
+        echo "# Performance Test Report" > performance_report.md
+        echo "" >> performance_report.md
+        echo "## Test Configuration" >> performance_report.md
+        echo "- Cluster: ${{ env.GKE_CLUSTER }}" >> performance_report.md
+        echo "- Zone: ${{ env.GKE_ZONE }}" >> performance_report.md
+        echo "- HPA Min Replicas: 1" >> performance_report.md
+        echo "- HPA Max Replicas: 3" >> performance_report.md
+        echo "- CPU Threshold: 50%" >> performance_report.md
+        echo "" >> performance_report.md
+        echo "## Final Pod Status" >> performance_report.md
+        echo '```' >> performance_report.md
+        kubectl get pods -l app=iris-api -o wide >> performance_report.md
+        echo '```' >> performance_report.md
+        echo "" >> performance_report.md
+        echo "## HPA Status" >> performance_report.md
+        echo '```' >> performance_report.md
+        kubectl get hpa iris-api-hpa >> performance_report.md
+        echo '```' >> performance_report.md
+        
+        cat performance_report.md
+
+    - name: Upload Performance Report
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-report
+        path: performance_report.md
+
+    - name: Print Summary
+      if: always()
+      run: |
+        echo "=========================================="
+        echo "DEPLOYMENT AND TESTING COMPLETE"
+        echo "=========================================="
+        echo "External IP: ${{ steps.get-ip.outputs.EXTERNAL_IP }}"
+        echo "Test your API:"
+        echo "curl http://${{ steps.get-ip.outputs.EXTERNAL_IP }}/health"
+        echo ""
+        echo "View HPA status:"
+        echo "kubectl get hpa iris-api-hpa"

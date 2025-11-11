@@ -5,7 +5,7 @@ metadata:
   labels:
     app: iris-api
 spec:
-  replicas: 2
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -33,7 +33,7 @@ spec:
 
         resources:
           requests:
-            memory: "128Mi"
+            memory: "256Mi"
             cpu: "200m"
           limits:
             memory: "512Mi"
@@ -43,7 +43,7 @@ spec:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 45
+          initialDelaySeconds: 60
           periodSeconds: 15
           timeoutSeconds: 5
           failureThreshold: 5
@@ -52,7 +52,7 @@ spec:
           httpGet:
             path: /health
             port: 8000
-          initialDelaySeconds: 20
+          initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 5
