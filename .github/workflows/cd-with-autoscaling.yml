@@ -30,19 +30,16 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install DVC
+      # ✅ Removed all DVC steps since model is already in repo
+      - name: Verify model file
         run: |
-          pip install dvc dvc-gdrive
-
-      - name: Pull model from DVC
-        env:
-          GDRIVE_CREDENTIALS_DATA: ${{ secrets.GDRIVE_CREDENTIALS_DATA }}
-        run: |
-          dvc remote modify myremote --local gdrive_use_service_account true
-          dvc remote modify myremote --local gdrive_service_account_json_file_path /tmp/gdrive_creds.json
-          echo "$GDRIVE_CREDENTIALS_DATA" > /tmp/gdrive_creds.json
-          dvc pull model/model.pkl.dvc
-          ls -la model/
+          echo "Checking for model file..."
+          ls -lh models/
+          if [ ! -f "models/iris_model.pkl" ]; then
+            echo "Model file not found! Make sure models/iris_model.pkl exists."
+            exit 1
+          fi
+          echo "Model file found."
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
