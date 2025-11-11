@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       connections:
-        description: 'Number of concurrent connections'
+        description: "Number of concurrent connections"
         required: true
-        default: '1000'
+        default: "1000"
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -17,121 +17,122 @@ jobs:
   test-bottleneck:
     name: Stress Test without Auto-scaling
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-    - name: Set up Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
 
-    - name: Get GKE Credentials
-      uses: google-github-actions/get-gke-credentials@v2
-      with:
-        cluster_name: ${{ env.GKE_CLUSTER }}
-        location: ${{ env.GKE_ZONE }}
+      - name: Get GKE Credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location: ${{ env.GKE_ZONE }}
 
-    - name: Disable HPA (for bottleneck testing)
-      run: |
-        echo "Disabling HPA to test bottleneck scenario..."
-        kubectl delete hpa iris-api-hpa --ignore-not-found=true
-        
-        # Scale to exactly 1 pod
-        kubectl scale deployment iris-api --replicas=1
-        
-        echo "Waiting for scaling to complete..."
-        sleep 30
-        
-        echo "=== Current Pod Status ==="
-        kubectl get pods -l app=iris-api
+      - name: Disable HPA (for bottleneck testing)
+        run: |
+          echo "Disabling HPA to test bottleneck scenario..."
+          kubectl delete hpa iris-api-hpa --ignore-not-found=true
 
-    - name: Get External IP
-      id: get-ip
-      run: |
-        EXTERNAL_IP=$(kubectl get service iris-api-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-        echo "EXTERNAL_IP=$EXTERNAL_IP" >> $GITHUB_OUTPUT
-        echo "External IP: $EXTERNAL_IP"
+          # Scale to exactly 1 pod
+          kubectl scale deployment iris-api --replicas=1
 
-    - name: Install wrk
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential libssl-dev git
-        git clone https://github.com/wg/wrk.git /tmp/wrk
-        cd /tmp/wrk
-        make
-        sudo cp wrk /usr/local/bin/
+          echo "Waiting for scaling to complete..."
+          sleep 30
 
-    - name: Stress Test with 1 Pod
-      run: |
-        EXTERNAL_IP=${{ steps.get-ip.outputs.EXTERNAL_IP }}
-        CONNECTIONS=${{ github.event.inputs.connections }}
-        
-        echo "=========================================="
-        echo "BOTTLENECK TEST: $CONNECTIONS connections with 1 POD"
-        echo "=========================================="
-        echo "This demonstrates the bottleneck when auto-scaling is disabled"
-        echo ""
-        
-        cat > post.lua << 'EOF'
-        wrk.method = "POST"
-        wrk.body   = '{"sepal_length": 5.1, "sepal_width": 3.5, "petal_length": 1.4, "petal_width": 0.2}'
-        wrk.headers["Content-Type"] = "application/json"
-EOF
-        
-        # Monitor CPU before test
-        echo "=== CPU Usage Before Test ==="
-        kubectl top pods -l app=iris-api || echo "Metrics not available yet"
-        
-        # Run stress test
-        wrk -t10 -c${CONNECTIONS} -d60s -s post.lua http://$EXTERNAL_IP/predict | tee test_results.txt
-        
-        echo ""
-        echo "=== CPU Usage After Test ==="
-        kubectl top pods -l app=iris-api || echo "Metrics not available yet"
-        
-        echo ""
-        echo "=== Pod Status (should still be 1 pod) ==="
-        kubectl get pods -l app=iris-api
+          echo "=== Current Pod Status ==="
+          kubectl get pods -l app=iris-api
 
-    - name: Generate Bottleneck Report
-      if: always()
-      run: |
-        CONNECTIONS=${{ github.event.inputs.connections }}
-        
-        echo "# Bottleneck Test Report" > bottleneck_report.md
-        echo "" >> bottleneck_report.md
-        echo "## Configuration" >> bottleneck_report.md
-        echo "- Pods: 1 (fixed, no auto-scaling)" >> bottleneck_report.md
-        echo "- Concurrent Connections: $CONNECTIONS" >> bottleneck_report.md
-        echo "- Duration: 60 seconds" >> bottleneck_report.md
-        echo "" >> bottleneck_report.md
-        echo "## Test Results" >> bottleneck_report.md
-        echo '```' >> bottleneck_report.md
-        cat test_results.txt >> bottleneck_report.md 2>/dev/null || echo "Results not available" >> bottleneck_report.md
-        echo '```' >> bottleneck_report.md
-        echo "" >> bottleneck_report.md
-        echo "## Pod Status" >> bottleneck_report.md
-        echo '```' >> bottleneck_report.md
-        kubectl get pods -l app=iris-api >> bottleneck_report.md
-        echo '```' >> bottleneck_report.md
-        
-        cat bottleneck_report.md
+      - name: Get External IP
+        id: get-ip
+        run: |
+          EXTERNAL_IP=$(kubectl get service iris-api-service -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo "EXTERNAL_IP=$EXTERNAL_IP" >> $GITHUB_OUTPUT
+          echo "External IP: $EXTERNAL_IP"
 
-    - name: Upload Bottleneck Report
-      if: always()
-      uses: actions/upload-artifact@v3
-      with:
-        name: bottleneck-report-${{ github.event.inputs.connections }}
-        path: bottleneck_report.md
+      - name: Install wrk
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev git
+          git clone https://github.com/wg/wrk.git /tmp/wrk
+          cd /tmp/wrk
+          make
+          sudo cp wrk /usr/local/bin/
 
-    - name: Re-enable HPA
-      if: always()
-      run: |
-        echo "Re-enabling HPA..."
-        kubectl apply -f k8s/hpa.yaml
-        echo "HPA re-enabled"
+      - name: Stress Test with 1 Pod
+        run: |
+          EXTERNAL_IP=${{ steps.get-ip.outputs.EXTERNAL_IP }}
+          CONNECTIONS=${{ github.event.inputs.connections }}
+
+          echo "=========================================="
+          echo "BOTTLENECK TEST: $CONNECTIONS connections with 1 POD"
+          echo "=========================================="
+          echo "This demonstrates the bottleneck when auto-scaling is disabled"
+          echo ""
+
+          cat <<'EOF' > post.lua
+          wrk.method = "POST"
+          wrk.body   = '{"sepal_length": 5.1, "sepal_width": 3.5, "petal_length": 1.4, "petal_width": 0.2}'
+          wrk.headers["Content-Type"] = "application/json"
+          EOF
+
+          echo "=== CPU Usage Before Test ==="
+          kubectl top pods -l app=iris-api || echo "Metrics not available yet"
+
+          wrk -t10 -c${CONNECTIONS} -d60s -s post.lua http://$EXTERNAL_IP/predict | tee test_results.txt
+
+          echo ""
+          echo "=== CPU Usage After Test ==="
+          kubectl top pods -l app=iris-api || echo "Metrics not available yet"
+
+          echo ""
+          echo "=== Pod Status (should still be 1 pod) ==="
+          kubectl get pods -l app=iris-api
+
+      - name: Generate Bottleneck Report
+        if: always()
+        run: |
+          CONNECTIONS=${{ github.event.inputs.connections }}
+
+          {
+            echo "# Bottleneck Test Report"
+            echo ""
+            echo "## Configuration"
+            echo "- Pods: 1 (fixed, no auto-scaling)"
+            echo "- Concurrent Connections: $CONNECTIONS"
+            echo "- Duration: 60 seconds"
+            echo ""
+            echo "## Test Results"
+            echo '```'
+            cat test_results.txt 2>/dev/null || echo "Results not available"
+            echo '```'
+            echo ""
+            echo "## Pod Status"
+            echo '```'
+            kubectl get pods -l app=iris-api
+            echo '```'
+          } > bottleneck_report.md
+
+          cat bottleneck_report.md
+
+      - name: Upload Bottleneck Report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: bottleneck-report-${{ github.event.inputs.connections }}
+          path: bottleneck_report.md
+
+      - name: Re-enable HPA
+        if: always()
+        run: |
+          echo "Re-enabling HPA..."
+          kubectl apply -f k8s/hpa.yaml
+          echo "HPA re-enabled"
+
